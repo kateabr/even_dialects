@@ -119,18 +119,11 @@ for(pos in parts_of_speech){
 
 
 ```{r}
-as.tibble(read.csv(res_fname)) %>%
-  select(-X) %>%
-  mutate(s = NA) %>%
-  mutate(k = NA) -> res
-
 for(factor in res$factor){
   as.tibble(data[, factor]) %>%
     mutate(corpus = data$corpus) -> current_col
   current_col %>%
-    filter(current_col[, 1] == 1) -> current_col
-  num_of_occ <- nrow(current_col)
-  current_col %>%
+    filter(current_col[, 1] == 1) %>%
     count(corpus) %>%
     spread(key = "corpus", value = "n") -> count
   idx <- which(res$factor == factor)[1]
