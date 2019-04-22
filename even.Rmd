@@ -62,9 +62,6 @@ data$pos %>%
 ```
 
 ```{r}
-i<-1
-pos<-"n"
-
 res_cols <- c("factor", "dialect_cor_pval_random", "dialect_cor_pval_bundled")
 res <- data.frame(matrix(ncol = length(res_cols), nrow = 0))
 colnames(res) <- res_cols
