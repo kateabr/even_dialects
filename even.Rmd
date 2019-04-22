@@ -5,8 +5,6 @@ output: html_notebook
 
 ```{r}
 library(tidyverse)
-library(dplyr)
-library(stats)
 library(lme4)
 
 setwd("D:\\Desktop\\even")
@@ -64,6 +62,9 @@ data$pos %>%
 ```
 
 ```{r}
+i<-1
+pos<-"n"
+
 res_cols <- c("factor", "dialect_cor_pval_random", "dialect_cor_pval_bundled")
 res <- data.frame(matrix(ncol = length(res_cols), nrow = 0))
 colnames(res) <- res_cols
@@ -93,7 +94,7 @@ for(pos in parts_of_speech){
     }
     )
     
-        tryCatch(
+    tryCatch(
     {
       #..._random  
       fit_random <- glmer(relevant_data[, relevant_cols[i]] ~ corpus + (1|speaker), data = relevant_data, family = "binomial")
@@ -109,8 +110,8 @@ for(pos in parts_of_speech){
     }
     )
 
-    pvs_bundled <- ifelse(factor_status_bundled == factor_status$SUCC, unname(coef(summary(fit_random))[,'Pr(>|z|)'][2]), NA)
-    pvs_random <- ifelse(factor_status_random == factor_status$SUCC, unname(coef(summary(fit_bundled))[,'Pr(>|z|)'][2]), NA)
+    pvs_bundled <- ifelse(factor_status_bundled == factor_status$SUCC, unname(coef(summary(fit_bundled))[,'Pr(>|z|)'][2]), NA)
+    pvs_random <- ifelse(factor_status_random == factor_status$SUCC, unname(coef(summary(fit_random))[,'Pr(>|z|)'][2]), NA)
     
     res <- rbind(res, data.frame(factor = relevant_cols[i], dialect_cor_pval_bundled = pvs_bundled, dialect_cor_pval_random = pvs_random))
   }
