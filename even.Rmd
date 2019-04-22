@@ -1,0 +1,156 @@
+---
+title: "Even"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(stats)
+library(lme4)
+
+setwd("D:\\Desktop\\even")
+log_name <- "log.txt"
+res_fname <- "facts_res.txt"
+```
+
+```{r}
+# scr: обновляемый массив
+# rem: массив значений, которые необходимо исключить
+# return: src без значений из rem
+remove <- function(src, rem){
+  return(src[-which(src %in% rem)])
+}
+
+# scr: список всех столбцов с признаками, из которых необходимо выделить относящиеся к части речи pos
+# pos: часть речи
+# return: список всех столбцов с признаками, относящимися к части речи pos
+get_pos_features <- function(src, pos){
+  pos <- paste(".", pos, sep = "")
+  res <- src[which(endsWith(src, pos))]
+  if(pos == ".n"){
+    return(res[which(!endsWith(res, ".rel.n"))])
+  }
+  return(res)
+}
+
+# возможные статусы регрессии:
+# SUCC: подсчитана успешно
+# FAIL: не была подсчитана (например, если показатель вообще не встречается в таблице)
+factor_status_fun <- function() {
+    list(SUCC = "SUCC", FAIL = "FAIL")
+}
+
+factor_status <- factor_status_fun()
+```
+
+```{r}
+data <- read.csv("D:\\Desktop\\wordmor_table.csv", encoding = "UTF-8")
+data <- data.frame(data)
+```
+
+
+Speakers: data$speaker
+Part of speech: data$pos
+Dialect: data$corpus
+
+```{r}
+data$pos %>%
+  unique() %>%
+  # исключаем из рассмотрения неизвестные части речи
+  # в финальной таблице не будет показателя END.END.END
+  remove(., c("?")) %>%
+  droplevels(.) -> parts_of_speech
+```
+
+```{r}
+res_cols <- c("factor", "dialect_cor_pval_random", "dialect_cor_pval_bundled")
+res <- data.frame(matrix(ncol = length(res_cols), nrow = 0))
+colnames(res) <- res_cols
+
+for(pos in parts_of_speech){
+  relevant_cols <- get_pos_features(colnames(data), pos)
+  relevant_data <- data[data$pos == pos, ]
+  for(i in seq(1, length(relevant_cols))){
+    relevant_data[, relevant_cols[i]] <- as.factor(relevant_data[, relevant_cols[i]])
+    
+    factor_status_bundled <- factor_status$FAIL
+    factor_status_random <- factor_status$FAIL
+    
+    tryCatch(
+    {
+      #..._bundled  
+      fit_bundled <- glmer(relevant_data[, relevant_cols[i]] ~ corpus + (1|corpus:speaker), data = relevant_data, family = "binomial")
+      
+      factor_status_bundled <- factor_status$SUCC
+    },
+    error = function(cond) {
+        
+    },
+    
+    finally = {
+      capture.output(paste(relevant_cols[i], "[bundled]", ":", factor_status_bundled), file = log_name, append = TRUE)
+    }
+    )
+    
+        tryCatch(
+    {
+      #..._random  
+      fit_random <- glmer(relevant_data[, relevant_cols[i]] ~ corpus + (1|speaker), data = relevant_data, family = "binomial")
+      
+      factor_status_random <- factor_status$SUCC
+    },
+    error = function(cond) {
+        
+    },
+    
+    finally = {
+      capture.output(paste(relevant_cols[i], "[random]", ":", factor_status_random), file = log_name, append = TRUE)
+    }
+    )
+
+    pvs_bundled <- ifelse(factor_status_bundled == factor_status$SUCC, unname(coef(summary(fit_random))[,'Pr(>|z|)'][2]), NA)
+    pvs_random <- ifelse(factor_status_random == factor_status$SUCC, unname(coef(summary(fit_bundled))[,'Pr(>|z|)'][2]), NA)
+    
+    res <- rbind(res, data.frame(factor = relevant_cols[i], dialect_cor_pval_bundled = pvs_bundled, dialect_cor_pval_random = pvs_random))
+  }
+}
+```
+
+
+```{r}
+as.tibble(read.csv(res_fname)) %>%
+  select(-X) %>%
+  mutate(s = NA) %>%
+  mutate(k = NA) -> res
+
+for(factor in res$factor){
+  as.tibble(data[, factor]) %>%
+    mutate(corpus = data$corpus) -> current_col
+  current_col %>%
+    filter(current_col[, 1] == 1) -> current_col
+  num_of_occ <- nrow(current_col)
+  current_col %>%
+    count(corpus) %>%
+    spread(key = "corpus", value = "n") -> count
+  idx <- which(res$factor == factor)[1]
+  for(corpus in colnames(count)){
+    res[idx, corpus] <- count[, corpus]
+  }
+}
+
+res$s[is.na(res$s)] <- 0
+res$k[is.na(res$k)] <- 0
+
+# не вошли в финальную таблицу
+for(col in colnames(data)){
+  if(!(col %in% res$factor)){
+    print(col)
+  }
+}
+```
+
+
+```{r}
+write.csv(res, file = res_fname)
+```
