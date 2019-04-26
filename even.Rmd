@@ -6,8 +6,10 @@ output: html_notebook
 ```{r}
 library(tidyverse)
 library(lme4)
+library(merTools)
+library(rlist)
 
-setwd("D:\\Desktop\\even")
+setwd("D:\\Desktop\\even_dialects")
 log_name <- "log.txt"
 res_fname <- "facts_res.txt"
 ```
@@ -34,12 +36,24 @@ get_pos_features <- function(src, pos){
 
 # возможные статусы регрессии:
 # SUCC: подсчитана успешно
-# FAIL: не была подсчитана (например, если показатель вообще не встречается в таблице)
+# NCON: регрессия не сошлась
+# FAIL: ошибка по неизвестной причине
 factor_status_fun <- function() {
-    list(SUCC = "SUCC", FAIL = "FAIL")
+    list(SUCC = "SUCCESS", ERR = "ERROR_OR_WARNING", RES = "RESET")
 }
 
 factor_status <- factor_status_fun()
+
+# интерпретация summary регрессии
+# fit: объект регрессии
+# pvs: извлеченное из summary(fit) p-value
+# return: один из трех статусов регрессии
+get_factor_status <- function(fit){
+  code <- fit@optinfo$conv$lme4$code
+  if(is.null(code))
+    return(list(factor_status$SUCC))
+  return(list(factor_status$ERR, fit@optinfo$conv$lme4$messages))
+}
 ```
 
 ```{r}
@@ -56,67 +70,111 @@ Dialect: data$corpus
 data$pos %>%
   unique() %>%
   # исключаем из рассмотрения неизвестные части речи
-  # в финальной таблице не будет показателя END.END.END
   remove(., c("?")) %>%
   droplevels(.) -> parts_of_speech
 ```
 
 ```{r}
-res_cols <- c("factor", "dialect_cor_pval_random", "dialect_cor_pval_bundled")
+# таблица, в которую будут записываться результаты регрессий
+# factor: показатель
+# dialect_cor_pval_random: pval регрессии, где speaker -- случайный эффект модели
+# dialect_cor_pval_bundled: pval регрессии, где speaker -- вложенный случайный эффект модели
+# random_converged, bundled_converged: регрессия с соответствующей моделью сошлась
+# f_pos: часть речи показателя
+res_cols <- c("factor", "dialect_cor_pval_random", "dialect_cor_pval_bundled", "random_converged", "bundled_converged", "f_pos")
 res <- data.frame(matrix(ncol = length(res_cols), nrow = 0))
 colnames(res) <- res_cols
 
 for(pos in parts_of_speech){
+  # список названий столбцов, в которых содержится информация о показателях, относящихся к определенной части речи
   relevant_cols <- get_pos_features(colnames(data), pos)
+  
+  # список строк, в которых содержится информация о показателях, относящихся к определенной части речи
   relevant_data <- data[data$pos == pos, ]
+  
   for(i in seq(1, length(relevant_cols))){
+    # факторизация
     relevant_data[, relevant_cols[i]] <- as.factor(relevant_data[, relevant_cols[i]])
     
-    factor_status_bundled <- factor_status$FAIL
-    factor_status_random <- factor_status$FAIL
+    # сброс статуса регрессий
+    factor_status_bundled <- factor_status$RES
+    factor_status_random <- factor_status$RES
     
+    # сброс pval
+    pvs_bundled <- NA
+    pvs_random <- NA
+    
+    # игнорирование ошибок. статус регрессий с предупреждениями (если есть) сохраняется в логе.
     tryCatch(
     {
       #..._bundled  
-      fit_bundled <- glmer(relevant_data[, relevant_cols[i]] ~ corpus + (1|corpus:speaker), data = relevant_data, family = "binomial")
+      fit_bundled <- glmer(relevant_data[, relevant_cols[i]] ~ corpus + (corpus|speaker), data = relevant_data, family = binomial,
+                           control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun=10000)))
       
-      factor_status_bundled <- factor_status$SUCC
+      pvs_bundled <- unname(coef(summary(fit_bundled))[,'Pr(>|z|)'][2])
     },
     error = function(cond) {
         
     },
     
     finally = {
-      capture.output(paste(relevant_cols[i], "[bundled]", ":", factor_status_bundled), file = log_name, append = TRUE)
+      factor_status_bundled <- get_factor_status(fit_bundled)
+      
+      capture.output(paste(relevant_cols[i], "[bundled]", ":", paste(unlist(factor_status_bundled))), file = log_name, append = TRUE)
     }
     )
     
     tryCatch(
     {
       #..._random  
-      fit_random <- glmer(relevant_data[, relevant_cols[i]] ~ corpus + (1|speaker), data = relevant_data, family = "binomial")
+      fit_random <- glmer(relevant_data[, relevant_cols[i]] ~ corpus + (1|speaker), data = relevant_data, family = binomial,
+                          control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun=10000)))
       
-      factor_status_random <- factor_status$SUCC
+      pvs_random <- unname(coef(summary(fit_random))[,'Pr(>|z|)'][2])
     },
     error = function(cond) {
         
     },
-    
     finally = {
-      capture.output(paste(relevant_cols[i], "[random]", ":", factor_status_random), file = log_name, append = TRUE)
+      factor_status_random <- get_factor_status(fit_random)
+      
+      capture.output(paste(relevant_cols[i], "[random]", ":", paste(unlist(factor_status_random))), file = log_name, append = TRUE)
     }
     )
-
-    pvs_bundled <- ifelse(factor_status_bundled == factor_status$SUCC, unname(coef(summary(fit_bundled))[,'Pr(>|z|)'][2]), NA)
-    pvs_random <- ifelse(factor_status_random == factor_status$SUCC, unname(coef(summary(fit_random))[,'Pr(>|z|)'][2]), NA)
     
-    res <- rbind(res, data.frame(factor = relevant_cols[i], dialect_cor_pval_bundled = pvs_bundled, dialect_cor_pval_random = pvs_random))
+    # добавление в таблицу с результатами строки с информацией о текущем показателе
+    res <- rbind(res, data.frame(factor = relevant_cols[i],
+                                 # если регрессия не сошлась, в таблицу пишется NA
+                                 dialect_cor_pval_bundled = ifelse(factor_status_bundled == factor_status$SUCC, pvs_bundled, NA),
+                                 dialect_cor_pval_random = ifelse(factor_status_random == factor_status$SUCC, pvs_random, NA),
+                                 bundled_converged = as.numeric(unlist(factor_status_bundled)[1] == factor_status$SUCC),
+                                 random_converged = as.numeric(unlist(factor_status_random)[1] == factor_status$SUCC),
+                                 f_pos = pos))
   }
 }
 ```
 
 
 ```{r}
+# получение именованного списка с суммарным количеством вхождений всех признаков, относящихся к данной части речи
+# для статистики
+pos_stats<-list()
+for(pos in parts_of_speech){
+  non_null_pos <- get_pos_features(colnames(data), pos)
+  pos_stats <- c(pos_stats, sum(unlist(lapply(non_null_pos, function(non_null_pos) sum(data[, non_null_pos])))))
+}
+
+names(pos_stats) <- parts_of_speech
+```
+
+
+```{r}
+# добавление в таблицу с результатами столбцов с частотой употребления в зависимости от диалекта
+res %>%
+  mutate(rel_freq_k = NA) %>%
+  mutate(rel_freq_s = NA) -> res
+
+# подсчет вхождений показателя по каждому диалекту
 for(factor in res$factor){
   as.tibble(data[, factor]) %>%
     mutate(corpus = data$corpus) -> current_col
@@ -133,15 +191,22 @@ for(factor in res$factor){
 res$s[is.na(res$s)] <- 0
 res$k[is.na(res$k)] <- 0
 
-# не вошли в финальную таблицу
-for(col in colnames(data)){
-  if(!(col %in% res$factor)){
-    print(col)
-  }
+# подсчет частоты употребления показателя относительно других показателей этой части речи
+for(factor in res$factor){
+  idx <- which(res$factor == factor)[1]
+  res[idx, "rel_freq_k"] <- res[idx, "k"] / as.numeric(pos_stats[res[idx, "f_pos"]])
+  res[idx, "rel_freq_s"] <- res[idx, "s"] / as.numeric(pos_stats[res[idx, "f_pos"]])
+  
+  if(is.nan(res[idx, "rel_freq_k"]))
+    res[idx, "rel_freq_k"] <- 0
+  if(is.nan(res[idx, "rel_freq_s"]))
+    res[idx, "rel_freq_s"] <- 0
 }
+
 ```
 
 
 ```{r}
+# экспорт
 write.csv(res, file = res_fname)
 ```
