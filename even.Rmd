@@ -194,15 +194,14 @@ res$k[is.na(res$k)] <- 0
 # подсчет частоты употребления показателя относительно других показателей этой части речи
 for(factor in res$factor){
   idx <- which(res$factor == factor)[1]
-  res[idx, "rel_freq_k"] <- res[idx, "k"] / as.numeric(pos_stats[res[idx, "f_pos"]])
-  res[idx, "rel_freq_s"] <- res[idx, "s"] / as.numeric(pos_stats[res[idx, "f_pos"]])
+  res[idx, "rel_freq_k"] <- res[idx, "k"] / as.numeric(pos_stats[as.character(res[idx, "f_pos"])])
+  res[idx, "rel_freq_s"] <- res[idx, "s"] / as.numeric(pos_stats[as.character(res[idx, "f_pos"])])
   
   if(is.nan(res[idx, "rel_freq_k"]))
     res[idx, "rel_freq_k"] <- 0
   if(is.nan(res[idx, "rel_freq_s"]))
     res[idx, "rel_freq_s"] <- 0
 }
-
 ```
 
 
