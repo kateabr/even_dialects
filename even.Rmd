@@ -16,29 +16,17 @@ res_fname <- "facts_res.txt"
 ```
 
 ```{r}
-# scr: обновляемый массив
-# rem: массив значений, которые необходимо исключить
-# return: src без значений из rem
-remove <- function(src, rem){
-  return(src[-which(src %in% rem)])
-}
-
 # scr: список всех столбцов с признаками, из которых необходимо выделить относящиеся к части речи pos
 # pos: часть речи
 # return: список всех столбцов с признаками, относящимися к части речи pos
 get_pos_features <- function(src, pos){
-  pos <- paste(".", pos, sep = "")
-  res <- src[which(endsWith(src, pos))]
-  if(pos == ".n"){
-    return(res[which(!endsWith(res, ".rel.n"))])
-  }
-  return(res)
+  return(src[which(endsWith(src, paste("-", as.character(pos), sep = "")))])
 }
 
 # возможные статусы регрессии:
 # SUCC: подсчитана успешно
 # NCON: регрессия не сошлась
-# FAIL: ошибка по неизвестной причине
+# RES: reset
 factor_status_fun <- function() {
     list(SUCC = "SUCCESS", ERR = "ERROR_OR_WARNING", RES = "RESET")
 }
@@ -60,20 +48,46 @@ get_factor_status <- function(fit){
 ```{r}
 data <- read.csv("D:\\Desktop\\wordmor_table.csv", encoding = "UTF-8")
 data <- data.frame(data)
-```
 
+# заголовки столбцов почему-то не загружаются правильно через read.csv
+con = file("D:\\Desktop\\wordmor_table.csv", "r")
+titles <- readLines(con, n = 1)
+close(con)
 
-Speakers: data$speaker
-Part of speech: data$pos
-Dialect: data$corpus
+colnames(data) <- strsplit(x = titles, split = '\\,')[[1]]
 
-```{r}
+# исключение спикеров
+ignore_speakers <- c('AL', 'NA', 'BP', 'children', 'VAK', 'NEN', 'T', '?', 'rh', 'TPA', 'R', 'LNZ', 'IAS')
+
+data %>%
+  filter(!(speaker %in% ignore_speakers)) -> data
+
+levels(data$speaker) <- droplevels(data$speaker)
+
+# исключение морфем
+data %>%
+  select(-corpus, -speaker, -pos) %>%
+  colnames(.) -> morphems
+
+ignore_cols <- c()
+
+for(cn in morphems){
+  if(grepl("?", cn, fixed = TRUE) | grepl("*", cn, fixed = TRUE)){
+    ignore_cols <- c(ignore_cols, cn)
+  }
+}
+
+data <- data[which(!(colnames(data) %in% ignore_cols))]
+
+# исключение частей речи
+data %>%
+  filter(!(pos %in% c('?'))) -> data
+
 data$pos %>%
   unique() %>%
-  # исключаем из рассмотрения неизвестные части речи
-  remove(., c("?")) %>%
   droplevels(.) -> parts_of_speech
 ```
+
 
 ```{r}
 # таблица, в которую будут записываться результаты регрессий
@@ -86,7 +100,11 @@ res_cols <- c("factor", "dialect_cor_pval_random", "dialect_cor_pval_bundled", "
 res <- data.frame(matrix(ncol = length(res_cols), nrow = 0))
 colnames(res) <- res_cols
 
+cnt <- 1
+tot <- nrow(data)
+
 for(pos in parts_of_speech){
+  
   # список названий столбцов, в которых содержится информация о показателях, относящихся к определенной части речи
   relevant_cols <- get_pos_features(colnames(data), pos)
   
@@ -94,6 +112,9 @@ for(pos in parts_of_speech){
   relevant_data <- data[data$pos == pos, ]
   
   for(i in seq(1, length(relevant_cols))){
+    print(paste(cnt, '/', tot))
+    cnt <- cnt + 1
+    
     # факторизация
     relevant_data[, relevant_cols[i]] <- as.factor(relevant_data[, relevant_cols[i]])
     
@@ -113,17 +134,14 @@ for(pos in parts_of_speech){
                            control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun=10000)))
       
       pvs_bundled <- unname(coef(summary(fit_bundled))[,'Pr(>|z|)'][2])
+      
+      factor_status_bundled <- get_factor_status(fit_bundled)
     },
     error = function(cond) {
         
-    },
+    })
     
-    finally = {
-      factor_status_bundled <- get_factor_status(fit_bundled)
-      
-      capture.output(paste(relevant_cols[i], "[bundled]", ":", paste(unlist(factor_status_bundled))), file = log_name, append = TRUE)
-    }
-    )
+    capture.output(paste(relevant_cols[i], "[bundled]", ":", paste(unlist(factor_status_bundled))), file = log_name, append = TRUE)
     
     tryCatch(
     {
@@ -132,16 +150,14 @@ for(pos in parts_of_speech){
                           control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun=10000)))
       
       pvs_random <- unname(coef(summary(fit_random))[,'Pr(>|z|)'][2])
+      
+      factor_status_random <- get_factor_status(fit_random)
     },
     error = function(cond) {
         
-    },
-    finally = {
-      factor_status_random <- get_factor_status(fit_random)
-      
-      capture.output(paste(relevant_cols[i], "[random]", ":", paste(unlist(factor_status_random))), file = log_name, append = TRUE)
-    }
-    )
+    })
+    
+    capture.output(paste(relevant_cols[i], "[random]", ":", paste(unlist(factor_status_random))), file = log_name, append = TRUE)
     
     # добавление в таблицу с результатами строки с информацией о текущем показателе
     res <- rbind(res, data.frame(factor = relevant_cols[i],
@@ -206,12 +222,15 @@ for(factor in res$factor){
 }
 ```
 
-#---------------------------------------
+```{r}
+# экспорт
+write.csv(res, file = res_fname)
+```
 
 ```{r}
 get_cis <- function(table_for_CI){
   table_for_CI %>%
-    mutate(CI_k_l = NA, CI_k_r = NA, CI_s_l = NA, CI_s_r = NA, diff = NA) -> table_for_CI
+    mutate(CI_intercept_l = NA, CI_intercept_r = NA, CI_b0_l = NA, CI_b0_r = NA, diff = NA) -> table_for_CI
   
   for(i in seq(1, length(table_for_CI$factor))){
     
@@ -230,16 +249,21 @@ get_cis <- function(table_for_CI){
     
     tryCatch(
       {
-      fit <- glmer(as.factor(relevant_data[, as.character(table_for_CI$factor[i])]) ~ corpus + (1|speaker),
+        # для bundled
+        fit <- glmer(as.factor(relevant_data[, as.character(table_for_CI$factor[i])]) ~ corpus + (corpus|speaker),
                            data = relevant_data, family = binomial,
                            control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun=10000)))
+        # для random
+        #fit <- glmer(as.factor(relevant_data[, as.character(table_for_CI$factor[i])]) ~ corpus + (1|speaker),
+        #                  data = relevant_data, family = binomial,
+        #                  control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun=10000)))
       
       pval <- unname(coef(summary(fit))[,'Pr(>|z|)'][2])
 
-              table_for_CI$CI_k_l[i] <- unname(confint(fit, parm="beta_",method="Wald", level = 0.95)[1,])[1]
-      table_for_CI$CI_k_r[i] <- unname(confint(fit, parm="beta_",method="Wald", level = 0.95)[1,])[2]
-      table_for_CI$CI_s_l[i] <- unname(confint(fit, parm="beta_",method="Wald", level = 0.95)[2,])[1]
-      table_for_CI$CI_s_r[i] <- unname(confint(fit, parm="beta_",method="Wald", level = 0.95)[2,])[2]
+      table_for_CI$CI_intercept_l[i] <- unname(confint(fit, parm="beta_",method="Wald", level = 0.95)[1,])[1]
+      table_for_CI$CI_intercept_r[i] <- unname(confint(fit, parm="beta_",method="Wald", level = 0.95)[1,])[2]
+      table_for_CI$CI_b0_l[i] <- unname(confint(fit, parm="beta_",method="Wald", level = 0.95)[2,])[1]
+      table_for_CI$CI_b0_r[i] <- unname(confint(fit, parm="beta_",method="Wald", level = 0.95)[2,])[2]
       
       table_for_CI$diff[i] <- abs(pval - table_for_CI[i, 2])
     },
@@ -250,27 +274,20 @@ get_cis <- function(table_for_CI){
   return(table_for_CI)
 }
 
-
-
-res <- read.csv("even_dialects - facts_res.csv")
-
 res %>%
   filter(!is.na(dialect_cor_pval_bundled) & (dialect_cor_pval_bundled < 0.05) & (bundled_converged == 1)) %>%
   select(-dialect_cor_pval_random, -random_converged, -bundled_converged) -> res_bundled
-res %>%
-  filter(!is.na(dialect_cor_pval_random) & (dialect_cor_pval_random < 0.05) & (random_converged == 1)) %>%
-  select(-dialect_cor_pval_bundled, -random_converged, -bundled_converged) -> res_random
+# res %>%
+#  filter(!is.na(dialect_cor_pval_random) & (dialect_cor_pval_random < 0.05) & (random_converged == 1)) %>%
+#  select(-dialect_cor_pval_bundled, -random_converged, -bundled_converged) -> res_random
 
-res_random <- get_cis(res_random)
-
-res_random$diff <- abs(res_random$diff)
+res_bundled <- get_cis(res_bundled)
+#res_random <- get_cis(res_random)
 ```
 
 #---------------------------------------
 
 ```{r}
-# экспорт
-write.csv(res, file = res_fname)
-
-write.csv(res_random, file = "random_CI.csv")
+write.csv(res_bundled, file = "bundled_CI.csv")
+#write.csv(res_random, file = "random_CI.csv")
 ```
